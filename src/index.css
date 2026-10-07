@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+@media print {
+  /* Hide non-printable app UI elements */
+  header,
+  nav,
+  .print\:hidden {
+    display: none !important;
+  }
+
+  body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Format printable sheet for direct browser printing */
+  #spb-printable-sheet {
+    position: static !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+    background: #ffffff !important;
+  }
+}

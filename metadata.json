@@ -1,0 +1,6 @@
+{
+  "name": "E-Pengadaan: Pendataan Belanja Barang & Jasa",
+  "description": "Aplikasi pendataan dan pengajuan belanja barang dan jasa dengan tampilan input grid ala MS Excel, filter, sorting, dan export file spreadsheet.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
