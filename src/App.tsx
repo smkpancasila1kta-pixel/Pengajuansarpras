@@ -38,9 +38,9 @@ export default function App() {
   const [items, setItems] = useState<ProcurementItem[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
+      if (saved !== null) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
+        if (Array.isArray(parsed)) {
           return parsed.map((item: any) => ({
             ...item,
             unit: UNIT_MAP[item.unit] || item.unit || 'Kakonsen TKR',
@@ -291,44 +291,60 @@ export default function App() {
     setActiveCell({ rowIdx: 0, colIdx: 4 });
   };
 
-  // Delete selected rows (uses in-app confirm dialog, safe for iframes)
+  // Delete selected rows permanently
   const handleDeleteSelected = useCallback(() => {
     if (selectedIds.size === 0) return;
     const count = selectedIds.size;
     setConfirmConfig({
       isOpen: true,
-      title: `Hapus ${count} Baris Pengajuan`,
-      message: `Apakah Anda yakin ingin menghapus ${count} baris pengajuan belanja yang dicentang? Data yang dihapus akan dihilangkan dari lembar kerja.`,
-      confirmText: `Hapus (${count} Baris)`,
+      title: `Hapus Permanen ${count} Baris Pengajuan`,
+      message: `Apakah Anda yakin ingin menghapus permanen ${count} baris pengajuan barang/jasa yang dicentang? Data akan dihapus secara permanen dari sistem dan tidak dapat dipulihkan.`,
+      confirmText: `Hapus Permanen (${count} Baris)`,
       confirmVariant: 'danger',
       iconType: 'trash',
       onConfirm: () => {
-        setItems(prev => prev.filter(i => !selectedIds.has(i.id)));
+        setItems(prev => {
+          const nextItems = prev.filter(i => !selectedIds.has(i.id));
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(nextItems));
+          } catch (e) {
+            console.error('Failed to save to localStorage:', e);
+          }
+          return nextItems;
+        });
         setSelectedIds(new Set());
-        showToast(`Berhasil menghapus ${count} baris pengajuan.`);
+        showToast(`Berhasil menghapus permanen ${count} baris pengajuan.`);
       },
     });
   }, [selectedIds, showToast]);
 
-  // Delete single row directly
+  // Delete single row directly and permanently
   const handleDeleteSingleRow = useCallback((id: string) => {
     const itemToDelete = items.find(i => i.id === id);
-    const itemName = itemToDelete ? itemToDelete.itemName : 'baris ini';
+    const itemName = itemToDelete?.itemName ? `"${itemToDelete.itemName}"` : 'item ini';
     setConfirmConfig({
       isOpen: true,
-      title: 'Hapus Baris Pengajuan',
-      message: `Apakah Anda yakin ingin menghapus pengajuan "${itemName}" dari lembar kerja?`,
-      confirmText: 'Hapus Baris',
+      title: 'Hapus Permanen Item Barang',
+      message: `Apakah Anda yakin ingin menghapus permanen ${itemName}? Data barang ini akan dihapus secara permanen dari sistem dan tidak dapat dikembalikan.`,
+      confirmText: 'Hapus Permanen',
       confirmVariant: 'danger',
       iconType: 'trash',
       onConfirm: () => {
-        setItems(prev => prev.filter(i => i.id !== id));
+        setItems(prev => {
+          const nextItems = prev.filter(i => i.id !== id);
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(nextItems));
+          } catch (e) {
+            console.error('Failed to save to localStorage:', e);
+          }
+          return nextItems;
+        });
         setSelectedIds(prev => {
           const next = new Set(prev);
           next.delete(id);
           return next;
         });
-        showToast(`Berhasil menghapus 1 baris pengajuan.`);
+        showToast(`Item barang ${itemName} berhasil dihapus secara permanen.`);
       },
     });
   }, [items, showToast]);

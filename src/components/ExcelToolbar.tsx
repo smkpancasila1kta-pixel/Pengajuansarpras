@@ -110,10 +110,10 @@ export const ExcelToolbar: React.FC<ExcelToolbarProps> = ({
                 ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-300 cursor-pointer shadow-xs active:scale-95' 
                 : 'bg-slate-100 text-slate-400 border-transparent cursor-not-allowed'
             }`}
-            title={selectedCount > 0 ? `Hapus ${selectedCount} baris yang dicentang` : 'Centang kotak pada baris untuk mengaktifkan tombol hapus'}
+            title={selectedCount > 0 ? `Hapus permanen ${selectedCount} baris barang yang dicentang` : 'Centang baris barang untuk menghapus permanen'}
           >
             <Trash2 className="w-3.5 h-3.5 text-rose-600" />
-            <span>Hapus Baris {selectedCount > 0 ? `(${selectedCount})` : ''}</span>
+            <span>Hapus Permanen {selectedCount > 0 ? `(${selectedCount})` : ''}</span>
           </button>
 
           {/* Batch Status dropdown when selected */}
