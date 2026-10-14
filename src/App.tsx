@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { onAuthStateChanged, User } from 'firebase/auth';
 import { 
   ProcurementItem, 
   FilterState, 
@@ -16,11 +15,15 @@ import { ImportModal } from './components/ImportModal';
 import { PrintModal } from './components/PrintModal';
 import { NewRowModal } from './components/NewRowModal';
 import { ConfirmModal } from './components/ConfirmModal';
+import { SyncModal } from './components/SyncModal';
 import { exportToExcel, exportToCSV, downloadTemplateExcel } from './utils/excelExport';
 import { getExcelColumnLetter } from './utils/formatters';
-import { auth, googleProvider, signInWithPopup, signOut, testConnection } from './firebase';
+import { testConnection } from './firebase';
 import { 
-  subscribeToUserItems, 
+  DEFAULT_SYNC_CODE,
+  SYNC_CODE_STORAGE_KEY,
+  SYNC_ENABLED_STORAGE_KEY,
+  subscribeToSyncCodeItems, 
   syncSaveItem, 
   syncDeleteItem, 
   syncDeleteMultipleItems, 
@@ -122,74 +125,114 @@ export default function App() {
     }, 3500);
   }, []);
 
-  // Auth & Cloud Sync state for 2-Device Synchronization
-  const [user, setUser] = useState<User | null>(null);
+  // 2-Device Synchronization State (Pairing Code based, seamless across Mobile & PC)
+  const [isSyncEnabled, setIsSyncEnabled] = useState<boolean>(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('sync')) return true;
+      const saved = localStorage.getItem(SYNC_ENABLED_STORAGE_KEY);
+      return saved === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const [syncCode, setSyncCode] = useState<string>(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const urlCode = params.get('sync');
+      if (urlCode && urlCode.trim()) {
+        const formatted = urlCode.trim().toUpperCase();
+        localStorage.setItem(SYNC_CODE_STORAGE_KEY, formatted);
+        localStorage.setItem(SYNC_ENABLED_STORAGE_KEY, 'true');
+        return formatted;
+      }
+      return localStorage.getItem(SYNC_CODE_STORAGE_KEY) || DEFAULT_SYNC_CODE;
+    } catch {
+      return DEFAULT_SYNC_CODE;
+    }
+  });
+
+  const [isSyncModalOpen, setIsSyncModalOpen] = useState<boolean>(false);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
 
-  // Initialize Firebase connection test and listen to auth state
+  // Initialize Firebase connection test on boot
   useEffect(() => {
     testConnection();
-    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-    });
-    return () => unsubscribeAuth();
   }, []);
 
-  // Google Login handler
-  const handleLogin = useCallback(async () => {
+  // Toggle sync on / off
+  const handleToggleSync = useCallback((enable: boolean) => {
+    setIsSyncEnabled(enable);
+    try {
+      localStorage.setItem(SYNC_ENABLED_STORAGE_KEY, String(enable));
+    } catch (e) {
+      console.warn(e);
+    }
+    if (enable) {
+      showToast(`✓ Sinkronisasi 2 Perangkat AKTIF! Terhubung ke Cloud (Kode: ${syncCode}).`);
+    } else {
+      showToast('Sinkronisasi cloud dinonaktifkan. Mode lokal aktif.');
+    }
+  }, [syncCode, showToast]);
+
+  // Update pairing sync code
+  const handleUpdateSyncCode = useCallback((newCode: string) => {
+    const formatted = newCode.trim().toUpperCase() || DEFAULT_SYNC_CODE;
+    setSyncCode(formatted);
+    try {
+      localStorage.setItem(SYNC_CODE_STORAGE_KEY, formatted);
+    } catch (e) {
+      console.warn(e);
+    }
+    showToast(`✓ Kode Sinkronisasi diperbarui: ${formatted}`);
+  }, [showToast]);
+
+  // Manually force upload local items to Firestore cloud
+  const handleForceSyncNow = useCallback(async () => {
     try {
       setIsSyncing(true);
-      await signInWithPopup(auth, googleProvider);
-      showToast('✓ Berhasil masuk dengan Google. Sinkronisasi antar device aktif!');
-    } catch (err: any) {
-      console.error('Login error:', err);
-      if (err?.code !== 'auth/popup-closed-by-user') {
-        showToast(`Gagal masuk dengan Google: ${err?.message || 'Silakan coba lagi'}`);
-      }
+      await syncUploadInitialItems(items, syncCode);
+      showToast(`✓ Seluruh ${items.length} data berhasil disinkronkan ke Cloud (Kode: ${syncCode}).`);
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal menyinkronkan data ke Cloud.');
     } finally {
       setIsSyncing(false);
     }
-  }, [showToast]);
+  }, [items, syncCode, showToast]);
 
-  // Logout handler
-  const handleLogout = useCallback(async () => {
-    try {
-      await signOut(auth);
-      showToast('Akun telah keluar. Aplikasi beralih ke mode lokal.');
-    } catch (err) {
-      console.error('Logout error:', err);
-    }
-  }, [showToast]);
-
-  // Real-time bidirectional Firestore sync when user is authenticated
+  // Real-time bidirectional Firestore sync for this syncCode across all devices
   useEffect(() => {
-    if (!user) return;
+    if (!isSyncEnabled) return;
 
     setIsSyncing(true);
     let isInitialLoad = true;
 
-    const unsubscribe = subscribeToUserItems(
-      user,
+    const unsubscribe = subscribeToSyncCodeItems(
+      syncCode,
       (remoteItems) => {
         setIsSyncing(false);
         if (isInitialLoad) {
           isInitialLoad = false;
-          // If Firestore is empty for this user, upload existing items so Device 2 will find them!
+          // If Firestore is completely empty for this syncCode, seed it with current local items
           if (remoteItems.length === 0 && items.length > 0) {
-            syncUploadInitialItems(items, user)
+            syncUploadInitialItems(items, syncCode)
               .then(() => {
-                showToast('✓ Data tabel berhasil disinkronkan ke cloud untuk 2 device.');
+                showToast(`✓ Data lokal berhasil diunggah ke Cloud (Kode: ${syncCode}).`);
               })
               .catch(console.error);
             return;
           }
         }
         // Remote data received from Firestore (e.g. from Device 2 or initial load)
-        setItems(remoteItems);
-        try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(remoteItems));
-        } catch (e) {
-          console.error(e);
+        if (remoteItems.length > 0) {
+          setItems(remoteItems);
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(remoteItems));
+          } catch (e) {
+            console.error(e);
+          }
         }
       },
       (err) => {
@@ -201,7 +244,7 @@ export default function App() {
     return () => {
       unsubscribe();
     };
-  }, [user, showToast]);
+  }, [isSyncEnabled, syncCode, showToast]);
 
   // Save to localStorage whenever items change
   useEffect(() => {
@@ -335,12 +378,12 @@ export default function App() {
       return item;
     }));
 
-    if (user && updatedTargetItem) {
-      syncSaveItem(updatedTargetItem, user).catch(err => {
+    if (isSyncEnabled && updatedTargetItem) {
+      syncSaveItem(updatedTargetItem, syncCode).catch(err => {
         console.error('Failed to sync item update to Firestore:', err);
       });
     }
-  }, [user]);
+  }, [isSyncEnabled, syncCode]);
 
   // Generate next automatic code (e.g. PBJ-2027-013)
   const getNextCode = useCallback(() => {
@@ -376,8 +419,8 @@ export default function App() {
     };
 
     setItems(prev => [...prev, newItem]);
-    if (user) {
-      syncSaveItem(newItem, user).catch(err => {
+    if (isSyncEnabled) {
+      syncSaveItem(newItem, syncCode).catch(err => {
         console.error('Failed to sync new item to Firestore:', err);
       });
     }
@@ -387,13 +430,13 @@ export default function App() {
       rowIdx: filteredAndSortedItems.length,
       colIdx: 4, // itemName column
     });
-  }, [getNextCode, filteredAndSortedItems.length, user]);
+  }, [getNextCode, filteredAndSortedItems.length, isSyncEnabled, syncCode]);
 
   // Add item from Modal form
   const handleAddItemFromModal = (newItem: ProcurementItem) => {
     setItems(prev => [newItem, ...prev]);
-    if (user) {
-      syncSaveItem(newItem, user).catch(err => {
+    if (isSyncEnabled) {
+      syncSaveItem(newItem, syncCode).catch(err => {
         console.error('Failed to sync modal item to Firestore:', err);
       });
     }
@@ -422,15 +465,15 @@ export default function App() {
     });
 
     // Delete permanently from Firestore so it deletes immediately across both devices
-    if (user) {
-      syncDeleteMultipleItems(idsToDelete, user).catch(err => {
+    if (isSyncEnabled) {
+      syncDeleteMultipleItems(idsToDelete).catch(err => {
         console.error('Failed to sync delete to Firestore:', err);
       });
     }
 
     const desc = itemNamesDesc || (idsToDelete.length > 1 ? `${idsToDelete.length} baris pengajuan` : 'Item barang');
     showToast(`✓ Data ${desc} berhasil dihapus secara permanen dari sistem.`);
-  }, [user, showToast]);
+  }, [isSyncEnabled, showToast]);
 
   // Delete selected rows or currently active row permanently
   const handleDeleteSelected = useCallback(() => {
@@ -502,8 +545,8 @@ export default function App() {
           status: 'Draft',
         };
         duplicatedItems.push(dup);
-        if (user) {
-          syncSaveItem(dup, user).catch(console.error);
+        if (isSyncEnabled) {
+          syncSaveItem(dup, syncCode).catch(console.error);
         }
       }
     });
@@ -512,7 +555,7 @@ export default function App() {
     const dupCount = selectedIds.size;
     setSelectedIds(new Set());
     showToast(`Berhasil menduplikasi ${dupCount} baris pengajuan.`);
-  }, [items, selectedIds, user, showToast]);
+  }, [items, selectedIds, isSyncEnabled, syncCode, showToast]);
 
   // Batch status change
   const handleBatchStatusChange = useCallback((status: ProcurementStatus) => {
@@ -520,15 +563,15 @@ export default function App() {
     setItems(prev => prev.map(item => {
       if (selectedIds.has(item.id)) {
         const updated = { ...item, status };
-        if (user) {
-          syncSaveItem(updated, user).catch(console.error);
+        if (isSyncEnabled) {
+          syncSaveItem(updated, syncCode).catch(console.error);
         }
         return updated;
       }
       return item;
     }));
     showToast(`Status ${selectedIds.size} baris diubah menjadi "${status}".`);
-  }, [selectedIds, user, showToast]);
+  }, [selectedIds, isSyncEnabled, syncCode, showToast]);
 
   // Sort header click
   const handleSortChange = useCallback((key: keyof ProcurementItem) => {
@@ -575,27 +618,27 @@ export default function App() {
       iconType: 'reset',
       onConfirm: () => {
         setItems(INITIAL_PROCUREMENT_DATA);
-        if (user) {
-          syncUploadInitialItems(INITIAL_PROCUREMENT_DATA, user).catch(console.error);
+        if (isSyncEnabled) {
+          syncUploadInitialItems(INITIAL_PROCUREMENT_DATA, syncCode).catch(console.error);
         }
         setSelectedIds(new Set());
         handleResetFilter();
         showToast('Data berhasil dimuat ulang ke contoh awal.');
       },
     });
-  }, [handleResetFilter, user, showToast]);
+  }, [handleResetFilter, isSyncEnabled, syncCode, showToast]);
 
   // Import data handler
   const handleImportData = (importedItems: ProcurementItem[], mode: 'append' | 'replace') => {
     if (mode === 'replace') {
       setItems(importedItems);
-      if (user) {
-        syncUploadInitialItems(importedItems, user).catch(console.error);
+      if (isSyncEnabled) {
+        syncUploadInitialItems(importedItems, syncCode).catch(console.error);
       }
     } else {
       setItems(prev => [...prev, ...importedItems]);
-      if (user) {
-        importedItems.forEach(item => syncSaveItem(item, user).catch(console.error));
+      if (isSyncEnabled) {
+        importedItems.forEach(item => syncSaveItem(item, syncCode).catch(console.error));
       }
     }
     setSelectedIds(new Set());
@@ -658,30 +701,39 @@ export default function App() {
         onOpenPrint={() => setIsPrintOpen(true)}
         hasUnsavedChanges={false}
         itemCount={items.length}
-        user={user}
+        isSyncEnabled={isSyncEnabled}
+        syncCode={syncCode}
         isSyncing={isSyncing}
-        onLogin={handleLogin}
-        onLogout={handleLogout}
+        onOpenSyncModal={() => setIsSyncModalOpen(true)}
       />
 
-      {/* 2-Device Real-time Sync Banner (when not signed in) */}
-      {!user && (
+      {/* 2-Device Real-time Sync Banner (when not enabled) */}
+      {!isSyncEnabled && (
         <div className="bg-emerald-950 text-emerald-100 text-[11px] px-4 py-1.5 flex items-center justify-between border-b border-emerald-800/80 flex-wrap gap-2 shadow-xs">
           <div className="flex items-center gap-2">
             <span className="font-bold bg-amber-400 text-slate-900 px-1.5 py-0.5 rounded text-[10px] tracking-wide">
               SINKRONISASI 2 DEVICE
             </span>
             <span>
-              Ingin data selalu update otomatis saat dibuka di 2 perangkat (Laptop & HP)? Masuk dengan akun Google yang sama di kedua perangkat.
+              Ingin data otomatis saling terhubung dan selalu update saat dibuka di 2 perangkat (Laptop & HP)?
             </span>
           </div>
-          <button
-            type="button"
-            onClick={handleLogin}
-            className="text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1 rounded cursor-pointer transition-colors shadow-xs"
-          >
-            Masuk dengan Google Sekarang
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleToggleSync(true)}
+              className="text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1 rounded cursor-pointer transition-colors shadow-xs"
+            >
+              Aktifkan Sekarang (1-Klik)
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsSyncModalOpen(true)}
+              className="text-[11px] bg-emerald-900/80 hover:bg-emerald-800 text-emerald-200 px-2.5 py-1 rounded cursor-pointer transition-colors border border-emerald-700/60"
+            >
+              Opsi / Kode
+            </button>
+          </div>
         </div>
       )}
 
@@ -772,6 +824,18 @@ export default function App() {
         confirmText={confirmConfig.confirmText}
         confirmVariant={confirmConfig.confirmVariant}
         iconType={confirmConfig.iconType}
+      />
+
+      {/* 8. 2-Device Real-time Sync Modal */}
+      <SyncModal
+        isOpen={isSyncModalOpen}
+        onClose={() => setIsSyncModalOpen(false)}
+        isSyncEnabled={isSyncEnabled}
+        syncCode={syncCode}
+        onToggleSync={handleToggleSync}
+        onUpdateSyncCode={handleUpdateSyncCode}
+        onForceSyncNow={handleForceSyncNow}
+        isSyncing={isSyncing}
       />
 
       {/* 8. Toast Feedback Notification */}

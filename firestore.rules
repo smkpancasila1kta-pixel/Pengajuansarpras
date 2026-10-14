@@ -3,11 +3,6 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper functions
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
     function incoming() {
       return request.resource.data;
     }
@@ -21,10 +16,10 @@ service cloud.firestore {
     }
 
     function isValidProcurementItem(data) {
-      return data.keys().hasAll(['id', 'ownerId', 'code', 'date', 'unit', 'type', 'category', 'itemName', 'quantity', 'unitMeasure', 'unitPrice', 'totalPrice', 'priority', 'status'])
-        && data.keys().hasOnly(['id', 'ownerId', 'code', 'date', 'unit', 'type', 'category', 'itemName', 'spec', 'quantity', 'unitMeasure', 'unitPrice', 'totalPrice', 'priority', 'status', 'notes', 'vendor', 'updatedAt'])
+      return data.keys().hasAll(['id', 'syncCode', 'code', 'date', 'unit', 'type', 'category', 'itemName', 'quantity', 'unitMeasure', 'unitPrice', 'totalPrice', 'priority', 'status'])
+        && data.keys().hasOnly(['id', 'syncCode', 'ownerId', 'code', 'date', 'unit', 'type', 'category', 'itemName', 'spec', 'quantity', 'unitMeasure', 'unitPrice', 'totalPrice', 'priority', 'status', 'notes', 'vendor', 'updatedAt'])
         && data.id is string && data.id.size() <= 128
-        && data.ownerId is string && data.ownerId.size() <= 128
+        && data.syncCode is string && data.syncCode.size() <= 64
         && data.code is string && data.code.size() <= 64
         && data.date is string && data.date.size() <= 32
         && data.unit is string && data.unit.size() <= 128
@@ -37,6 +32,7 @@ service cloud.firestore {
         && data.totalPrice is number && data.totalPrice >= 0
         && (data.priority == 'Tinggi' || data.priority == 'Sedang' || data.priority == 'Rendah')
         && (data.status == 'Draft' || data.status == 'Diajukan' || data.status == 'Disetujui' || data.status == 'Proses Beli' || data.status == 'Selesai' || data.status == 'Ditolak')
+        && (!('ownerId' in data) || (data.ownerId is string && data.ownerId.size() <= 128))
         && (!('spec' in data) || (data.spec is string && data.spec.size() <= 1000))
         && (!('notes' in data) || (data.notes is string && data.notes.size() <= 1000))
         && (!('vendor' in data) || (data.vendor is string && data.vendor.size() <= 256))
@@ -44,43 +40,44 @@ service cloud.firestore {
     }
 
     function isValidProcurementSettings(data) {
-      return data.keys().hasAll(['id', 'ownerId', 'fiscalYear'])
-        && data.keys().hasOnly(['id', 'ownerId', 'fiscalYear', 'npsn', 'pemohonName', 'customLogo', 'updatedAt'])
+      return data.keys().hasAll(['id', 'syncCode', 'fiscalYear'])
+        && data.keys().hasOnly(['id', 'syncCode', 'ownerId', 'fiscalYear', 'npsn', 'pemohonName', 'customLogo', 'updatedAt'])
         && data.id is string && data.id.size() <= 128
-        && data.ownerId is string && data.ownerId.size() <= 128
+        && data.syncCode is string && data.syncCode.size() <= 64
         && data.fiscalYear is string && data.fiscalYear.size() <= 16
+        && (!('ownerId' in data) || (data.ownerId is string && data.ownerId.size() <= 128))
         && (!('npsn' in data) || (data.npsn is string && data.npsn.size() <= 32))
         && (!('pemohonName' in data) || (data.pemohonName is string && data.pemohonName.size() <= 128))
         && (!('customLogo' in data) || (data.customLogo is string && data.customLogo.size() <= 500000))
         && (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
     }
 
-    // Default deny
+    // Default deny catch-all
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Connectivity test endpoint
+    // Health check endpoint
     match /test/{testId} {
       allow get: if true;
     }
 
-    // Procurement items collection
+    // Procurement items collection - synced by unique syncCode across devices
     match /procurement_items/{itemId} {
-      allow get: if isSignedIn() && resource.data.ownerId == request.auth.uid;
-      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
-      allow create: if isSignedIn() && isValidId(itemId) && isValidProcurementItem(incoming()) && incoming().ownerId == request.auth.uid;
-      allow update: if isSignedIn() && isValidId(itemId) && isValidProcurementItem(incoming()) && existing().ownerId == request.auth.uid && incoming().ownerId == existing().ownerId;
-      allow delete: if isSignedIn() && isValidId(itemId) && existing().ownerId == request.auth.uid;
+      allow get: if true;
+      allow list: if true;
+      allow create: if isValidId(itemId) && isValidProcurementItem(incoming());
+      allow update: if isValidId(itemId) && isValidProcurementItem(incoming()) && incoming().syncCode == existing().syncCode;
+      allow delete: if isValidId(itemId);
     }
 
-    // Procurement settings collection
+    // Procurement settings collection (fiscal year, logo, etc.)
     match /procurement_settings/{settingsId} {
-      allow get: if isSignedIn() && resource.data.ownerId == request.auth.uid;
-      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
-      allow create: if isSignedIn() && isValidId(settingsId) && isValidProcurementSettings(incoming()) && incoming().ownerId == request.auth.uid;
-      allow update: if isSignedIn() && isValidId(settingsId) && isValidProcurementSettings(incoming()) && existing().ownerId == request.auth.uid && incoming().ownerId == existing().ownerId;
-      allow delete: if isSignedIn() && isValidId(settingsId) && existing().ownerId == request.auth.uid;
+      allow get: if true;
+      allow list: if true;
+      allow create: if isValidId(settingsId) && isValidProcurementSettings(incoming());
+      allow update: if isValidId(settingsId) && isValidProcurementSettings(incoming()) && incoming().syncCode == existing().syncCode;
+      allow delete: if isValidId(settingsId);
     }
   }
 }

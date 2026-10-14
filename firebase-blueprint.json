@@ -10,6 +10,11 @@
           "description": "Unique identifier for procurement item",
           "maxLength": 128
         },
+        "syncCode": {
+          "type": "string",
+          "description": "Kode pairing sinkronisasi antar perangkat",
+          "maxLength": 64
+        },
         "ownerId": {
           "type": "string",
           "description": "User ID of the document owner",
@@ -95,7 +100,7 @@
       },
       "required": [
         "id",
-        "ownerId",
+        "syncCode",
         "code",
         "date",
         "unit",
@@ -119,6 +124,11 @@
           "type": "string",
           "description": "Identifier pengaturan",
           "maxLength": 128
+        },
+        "syncCode": {
+          "type": "string",
+          "description": "Kode pairing sinkronisasi",
+          "maxLength": 64
         },
         "ownerId": {
           "type": "string",
@@ -151,7 +161,7 @@
           "maxLength": 64
         }
       },
-      "required": ["id", "ownerId", "fiscalYear"]
+      "required": ["id", "syncCode", "fiscalYear"]
     }
   },
   "firestore": {

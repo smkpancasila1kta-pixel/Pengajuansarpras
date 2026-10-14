@@ -8,16 +8,19 @@ import {
   query, 
   where 
 } from 'firebase/firestore';
-import { User } from 'firebase/auth';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { ProcurementItem } from '../types/procurement';
 
 export const ITEMS_COLLECTION = 'procurement_items';
 export const SETTINGS_COLLECTION = 'procurement_settings';
+export const DEFAULT_SYNC_CODE = 'SMK-PBJ-2027';
+export const SYNC_CODE_STORAGE_KEY = 'pbj_sync_pair_code_v1';
+export const SYNC_ENABLED_STORAGE_KEY = 'pbj_sync_is_enabled_v1';
 
 export interface ProcurementSettingsSync {
   id: string;
-  ownerId: string;
+  syncCode: string;
+  ownerId?: string;
   fiscalYear: string;
   npsn?: string;
   pemohonName?: string;
@@ -25,10 +28,11 @@ export interface ProcurementSettingsSync {
   updatedAt?: string;
 }
 
-export function sanitizeProcurementItem(item: ProcurementItem, ownerId: string) {
+export function sanitizeProcurementItem(item: ProcurementItem, syncCode: string, ownerId?: string) {
+  const normalizedCode = (syncCode || DEFAULT_SYNC_CODE).trim().toUpperCase();
   const clean: Record<string, any> = {
     id: String(item.id),
-    ownerId: String(ownerId),
+    syncCode: normalizedCode,
     code: String(item.code || ''),
     date: String(item.date || new Date().toISOString().split('T')[0]),
     unit: String(item.unit || 'Kakonsen TKR'),
@@ -43,6 +47,7 @@ export function sanitizeProcurementItem(item: ProcurementItem, ownerId: string) 
     status: (['Draft', 'Diajukan', 'Disetujui', 'Proses Beli', 'Selesai', 'Ditolak'].includes(item.status) ? item.status : 'Draft'),
   };
 
+  if (ownerId) clean.ownerId = String(ownerId);
   if (item.spec && item.spec.trim()) {
     clean.spec = String(item.spec).slice(0, 1000);
   }
@@ -58,16 +63,17 @@ export function sanitizeProcurementItem(item: ProcurementItem, ownerId: string) 
 }
 
 /**
- * Subscribe to real-time changes for items owned by this user
+ * Subscribe to real-time changes for items with the specified syncCode (2-device pairing)
  */
-export function subscribeToUserItems(
-  user: User,
+export function subscribeToSyncCodeItems(
+  syncCode: string,
   onData: (items: ProcurementItem[]) => void,
-  onError: (err: unknown) => void
+  onError?: (err: unknown) => void
 ) {
+  const normalizedCode = (syncCode || DEFAULT_SYNC_CODE).trim().toUpperCase();
   const q = query(
     collection(db, ITEMS_COLLECTION),
-    where('ownerId', '==', user.uid)
+    where('syncCode', '==', normalizedCode)
   );
 
   return onSnapshot(
@@ -96,13 +102,14 @@ export function subscribeToUserItems(
         });
       });
 
-      // Maintain stable sort by date or order
+      // Sort by date descending then code
       serverItems.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
       onData(serverItems);
     },
     (err) => {
+      console.error('Firestore items sync error:', err);
       handleFirestoreError(err, OperationType.GET, ITEMS_COLLECTION);
-      onError(err);
+      if (onError) onError(err);
     }
   );
 }
@@ -110,10 +117,10 @@ export function subscribeToUserItems(
 /**
  * Save / Update a single procurement item to Firestore
  */
-export async function syncSaveItem(item: ProcurementItem, user: User) {
+export async function syncSaveItem(item: ProcurementItem, syncCode: string, ownerId?: string) {
   const path = `${ITEMS_COLLECTION}/${item.id}`;
   try {
-    const clean = sanitizeProcurementItem(item, user.uid);
+    const clean = sanitizeProcurementItem(item, syncCode, ownerId);
     await setDoc(doc(db, ITEMS_COLLECTION, item.id), clean);
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
@@ -123,7 +130,7 @@ export async function syncSaveItem(item: ProcurementItem, user: User) {
 /**
  * Delete a single procurement item permanently from Firestore
  */
-export async function syncDeleteItem(itemId: string, user: User) {
+export async function syncDeleteItem(itemId: string) {
   const path = `${ITEMS_COLLECTION}/${itemId}`;
   try {
     await deleteDoc(doc(db, ITEMS_COLLECTION, itemId));
@@ -135,8 +142,8 @@ export async function syncDeleteItem(itemId: string, user: User) {
 /**
  * Delete multiple items permanently from Firestore in batch
  */
-export async function syncDeleteMultipleItems(itemIds: string[], user: User) {
-  if (itemIds.length === 0) return;
+export async function syncDeleteMultipleItems(itemIds: string[]) {
+  if (!itemIds || itemIds.length === 0) return;
   const path = ITEMS_COLLECTION;
   try {
     const batch = writeBatch(db);
@@ -150,15 +157,15 @@ export async function syncDeleteMultipleItems(itemIds: string[], user: User) {
 }
 
 /**
- * Push all items (e.g. migration on first Google login if Firestore is empty)
+ * Push all items (e.g. migration or initial seed to Cloud Firestore)
  */
-export async function syncUploadInitialItems(items: ProcurementItem[], user: User) {
-  if (items.length === 0) return;
+export async function syncUploadInitialItems(items: ProcurementItem[], syncCode: string, ownerId?: string) {
+  if (!items || items.length === 0) return;
   const path = ITEMS_COLLECTION;
   try {
     const batch = writeBatch(db);
     items.forEach((item) => {
-      const clean = sanitizeProcurementItem(item, user.uid);
+      const clean = sanitizeProcurementItem(item, syncCode, ownerId);
       batch.set(doc(db, ITEMS_COLLECTION, item.id), clean);
     });
     await batch.commit();
@@ -170,19 +177,20 @@ export async function syncUploadInitialItems(items: ProcurementItem[], user: Use
 /**
  * Subscribe to settings sync (fiscal year, logo, etc.)
  */
-export function subscribeToUserSettings(
-  user: User,
+export function subscribeToSyncSettings(
+  syncCode: string,
   onData: (settings: ProcurementSettingsSync) => void
 ) {
+  const normalizedCode = (syncCode || DEFAULT_SYNC_CODE).trim().toUpperCase();
   return onSnapshot(
-    doc(db, SETTINGS_COLLECTION, user.uid),
+    doc(db, SETTINGS_COLLECTION, normalizedCode),
     (docSnap) => {
       if (docSnap.exists()) {
         onData(docSnap.data() as ProcurementSettingsSync);
       }
     },
     (err) => {
-      console.warn('Error reading user settings:', err);
+      console.warn('Error reading settings sync:', err);
     }
   );
 }
@@ -190,24 +198,27 @@ export function subscribeToUserSettings(
 /**
  * Save user settings to Firestore
  */
-export async function syncSaveUserSettings(
+export async function syncSaveSettings(
   settings: Partial<ProcurementSettingsSync>,
-  user: User
+  syncCode: string,
+  ownerId?: string
 ) {
-  const path = `${SETTINGS_COLLECTION}/${user.uid}`;
+  const normalizedCode = (syncCode || DEFAULT_SYNC_CODE).trim().toUpperCase();
+  const path = `${SETTINGS_COLLECTION}/${normalizedCode}`;
   try {
     const clean: Record<string, any> = {
-      id: user.uid,
-      ownerId: user.uid,
+      id: normalizedCode,
+      syncCode: normalizedCode,
       fiscalYear: settings.fiscalYear || '2027',
       updatedAt: new Date().toISOString(),
     };
+    if (ownerId) clean.ownerId = ownerId;
     if (settings.npsn) clean.npsn = settings.npsn.slice(0, 32);
     if (settings.pemohonName) clean.pemohonName = settings.pemohonName.slice(0, 128);
     if (settings.customLogo && settings.customLogo.length < 490000) {
       clean.customLogo = settings.customLogo;
     }
-    await setDoc(doc(db, SETTINGS_COLLECTION, user.uid), clean, { merge: true });
+    await setDoc(doc(db, SETTINGS_COLLECTION, normalizedCode), clean, { merge: true });
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
   }
