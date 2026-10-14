@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { onAuthStateChanged, User } from 'firebase/auth';
 import { 
   ProcurementItem, 
   FilterState, 
@@ -17,6 +18,14 @@ import { NewRowModal } from './components/NewRowModal';
 import { ConfirmModal } from './components/ConfirmModal';
 import { exportToExcel, exportToCSV, downloadTemplateExcel } from './utils/excelExport';
 import { getExcelColumnLetter } from './utils/formatters';
+import { auth, googleProvider, signInWithPopup, signOut, testConnection } from './firebase';
+import { 
+  subscribeToUserItems, 
+  syncSaveItem, 
+  syncDeleteItem, 
+  syncDeleteMultipleItems, 
+  syncUploadInitialItems 
+} from './services/procurementSync';
 
 const STORAGE_KEY = 'pbj_spreadsheet_procurement_items_v1';
 
@@ -112,6 +121,87 @@ export default function App() {
       setToastMessage(null);
     }, 3500);
   }, []);
+
+  // Auth & Cloud Sync state for 2-Device Synchronization
+  const [user, setUser] = useState<User | null>(null);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+
+  // Initialize Firebase connection test and listen to auth state
+  useEffect(() => {
+    testConnection();
+    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+    return () => unsubscribeAuth();
+  }, []);
+
+  // Google Login handler
+  const handleLogin = useCallback(async () => {
+    try {
+      setIsSyncing(true);
+      await signInWithPopup(auth, googleProvider);
+      showToast('✓ Berhasil masuk dengan Google. Sinkronisasi antar device aktif!');
+    } catch (err: any) {
+      console.error('Login error:', err);
+      if (err?.code !== 'auth/popup-closed-by-user') {
+        showToast(`Gagal masuk dengan Google: ${err?.message || 'Silakan coba lagi'}`);
+      }
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [showToast]);
+
+  // Logout handler
+  const handleLogout = useCallback(async () => {
+    try {
+      await signOut(auth);
+      showToast('Akun telah keluar. Aplikasi beralih ke mode lokal.');
+    } catch (err) {
+      console.error('Logout error:', err);
+    }
+  }, [showToast]);
+
+  // Real-time bidirectional Firestore sync when user is authenticated
+  useEffect(() => {
+    if (!user) return;
+
+    setIsSyncing(true);
+    let isInitialLoad = true;
+
+    const unsubscribe = subscribeToUserItems(
+      user,
+      (remoteItems) => {
+        setIsSyncing(false);
+        if (isInitialLoad) {
+          isInitialLoad = false;
+          // If Firestore is empty for this user, upload existing items so Device 2 will find them!
+          if (remoteItems.length === 0 && items.length > 0) {
+            syncUploadInitialItems(items, user)
+              .then(() => {
+                showToast('✓ Data tabel berhasil disinkronkan ke cloud untuk 2 device.');
+              })
+              .catch(console.error);
+            return;
+          }
+        }
+        // Remote data received from Firestore (e.g. from Device 2 or initial load)
+        setItems(remoteItems);
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(remoteItems));
+        } catch (e) {
+          console.error(e);
+        }
+      },
+      (err) => {
+        setIsSyncing(false);
+        console.error('Firestore subscription error:', err);
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, [user, showToast]);
 
   // Save to localStorage whenever items change
   useEffect(() => {
@@ -230,6 +320,7 @@ export default function App() {
 
   // Update a single item
   const handleUpdateItem = useCallback((id: string, updates: Partial<ProcurementItem>) => {
+    let updatedTargetItem: ProcurementItem | null = null;
     setItems(prev => prev.map(item => {
       if (item.id === id) {
         const updated = { ...item, ...updates };
@@ -238,11 +329,18 @@ export default function App() {
           const p = updates.unitPrice !== undefined ? updates.unitPrice : item.unitPrice;
           updated.totalPrice = Math.round((q || 0) * (p || 0));
         }
+        updatedTargetItem = updated;
         return updated;
       }
       return item;
     }));
-  }, []);
+
+    if (user && updatedTargetItem) {
+      syncSaveItem(updatedTargetItem, user).catch(err => {
+        console.error('Failed to sync item update to Firestore:', err);
+      });
+    }
+  }, [user]);
 
   // Generate next automatic code (e.g. PBJ-2027-013)
   const getNextCode = useCallback(() => {
@@ -278,45 +376,99 @@ export default function App() {
     };
 
     setItems(prev => [...prev, newItem]);
+    if (user) {
+      syncSaveItem(newItem, user).catch(err => {
+        console.error('Failed to sync new item to Firestore:', err);
+      });
+    }
+
     // Move active cell to the new row
     setActiveCell({
       rowIdx: filteredAndSortedItems.length,
       colIdx: 4, // itemName column
     });
-  }, [getNextCode, filteredAndSortedItems.length]);
+  }, [getNextCode, filteredAndSortedItems.length, user]);
 
   // Add item from Modal form
   const handleAddItemFromModal = (newItem: ProcurementItem) => {
     setItems(prev => [newItem, ...prev]);
+    if (user) {
+      syncSaveItem(newItem, user).catch(err => {
+        console.error('Failed to sync modal item to Firestore:', err);
+      });
+    }
     setActiveCell({ rowIdx: 0, colIdx: 4 });
   };
 
-  // Delete selected rows permanently
+  // Core permanent deletion executor that atomically updates state and localStorage
+  const executePermanentDelete = useCallback((idsToDelete: string[], itemNamesDesc?: string) => {
+    if (!idsToDelete || idsToDelete.length === 0) return;
+    const idSet = new Set(idsToDelete);
+
+    setItems(prev => {
+      const nextItems = prev.filter(item => !idSet.has(item.id));
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(nextItems));
+      } catch (e) {
+        console.error('Failed to save to localStorage:', e);
+      }
+      return nextItems;
+    });
+
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      idsToDelete.forEach(id => next.delete(id));
+      return next;
+    });
+
+    // Delete permanently from Firestore so it deletes immediately across both devices
+    if (user) {
+      syncDeleteMultipleItems(idsToDelete, user).catch(err => {
+        console.error('Failed to sync delete to Firestore:', err);
+      });
+    }
+
+    const desc = itemNamesDesc || (idsToDelete.length > 1 ? `${idsToDelete.length} baris pengajuan` : 'Item barang');
+    showToast(`✓ Data ${desc} berhasil dihapus secara permanen dari sistem.`);
+  }, [user, showToast]);
+
+  // Delete selected rows or currently active row permanently
   const handleDeleteSelected = useCallback(() => {
-    if (selectedIds.size === 0) return;
-    const count = selectedIds.size;
+    let targetIds: string[] = [];
+    let targetDesc = '';
+
+    if (selectedIds.size > 0) {
+      targetIds = Array.from(selectedIds);
+      targetDesc = `${targetIds.length} baris pengajuan barang yang dicentang`;
+    } else if (filteredAndSortedItems.length > 0) {
+      const activeIdx = activeCell?.rowIdx ?? 0;
+      const targetItem = filteredAndSortedItems[activeIdx] || filteredAndSortedItems[0];
+      if (targetItem) {
+        targetIds = [targetItem.id];
+        targetDesc = targetItem.itemName ? `"${targetItem.itemName}"` : 'baris pengajuan aktif';
+      }
+    }
+
+    if (targetIds.length === 0) {
+      showToast('Pilih atau klik baris barang yang ingin dihapus terlebih dahulu.');
+      return;
+    }
+
+    const count = targetIds.length;
+    const idsSnapshot = [...targetIds];
+
     setConfirmConfig({
       isOpen: true,
-      title: `Hapus Permanen ${count} Baris Pengajuan`,
-      message: `Apakah Anda yakin ingin menghapus permanen ${count} baris pengajuan barang/jasa yang dicentang? Data akan dihapus secara permanen dari sistem dan tidak dapat dipulihkan.`,
-      confirmText: `Hapus Permanen (${count} Baris)`,
+      title: `Hapus Permanen ${count > 1 ? `${count} Baris Pengajuan` : 'Item Barang'}`,
+      message: `Apakah Anda yakin ingin menghapus permanen ${targetDesc}? Data barang ini akan langsung dihapus dari sistem dan penyimpanan permanen sehingga tidak akan muncul kembali.`,
+      confirmText: count > 1 ? `Hapus Permanen (${count} Baris)` : 'Hapus Permanen Sekarang',
       confirmVariant: 'danger',
       iconType: 'trash',
       onConfirm: () => {
-        setItems(prev => {
-          const nextItems = prev.filter(i => !selectedIds.has(i.id));
-          try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(nextItems));
-          } catch (e) {
-            console.error('Failed to save to localStorage:', e);
-          }
-          return nextItems;
-        });
-        setSelectedIds(new Set());
-        showToast(`Berhasil menghapus permanen ${count} baris pengajuan.`);
+        executePermanentDelete(idsSnapshot, targetDesc);
       },
     });
-  }, [selectedIds, showToast]);
+  }, [selectedIds, filteredAndSortedItems, activeCell, executePermanentDelete, showToast]);
 
   // Delete single row directly and permanently
   const handleDeleteSingleRow = useCallback((id: string) => {
@@ -325,29 +477,15 @@ export default function App() {
     setConfirmConfig({
       isOpen: true,
       title: 'Hapus Permanen Item Barang',
-      message: `Apakah Anda yakin ingin menghapus permanen ${itemName}? Data barang ini akan dihapus secara permanen dari sistem dan tidak dapat dikembalikan.`,
-      confirmText: 'Hapus Permanen',
+      message: `Apakah Anda yakin ingin menghapus permanen ${itemName}? Data barang ini akan langsung dihapus dari sistem dan penyimpanan permanen sehingga tidak akan muncul kembali.`,
+      confirmText: 'Hapus Permanen Sekarang',
       confirmVariant: 'danger',
       iconType: 'trash',
       onConfirm: () => {
-        setItems(prev => {
-          const nextItems = prev.filter(i => i.id !== id);
-          try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(nextItems));
-          } catch (e) {
-            console.error('Failed to save to localStorage:', e);
-          }
-          return nextItems;
-        });
-        setSelectedIds(prev => {
-          const next = new Set(prev);
-          next.delete(id);
-          return next;
-        });
-        showToast(`Item barang ${itemName} berhasil dihapus secara permanen.`);
+        executePermanentDelete([id], itemName);
       },
     });
-  }, [items, showToast]);
+  }, [items, executePermanentDelete]);
 
   // Duplicate selected rows
   const handleDuplicateSelected = useCallback(() => {
@@ -356,13 +494,17 @@ export default function App() {
 
     items.forEach(item => {
       if (selectedIds.has(item.id)) {
-        duplicatedItems.push({
+        const dup: ProcurementItem = {
           ...item,
           id: `p-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
           code: `${item.code}-COPY`,
           itemName: `${item.itemName} (Salinan)`,
           status: 'Draft',
-        });
+        };
+        duplicatedItems.push(dup);
+        if (user) {
+          syncSaveItem(dup, user).catch(console.error);
+        }
       }
     });
 
@@ -370,19 +512,23 @@ export default function App() {
     const dupCount = selectedIds.size;
     setSelectedIds(new Set());
     showToast(`Berhasil menduplikasi ${dupCount} baris pengajuan.`);
-  }, [items, selectedIds, showToast]);
+  }, [items, selectedIds, user, showToast]);
 
   // Batch status change
   const handleBatchStatusChange = useCallback((status: ProcurementStatus) => {
     if (selectedIds.size === 0) return;
     setItems(prev => prev.map(item => {
       if (selectedIds.has(item.id)) {
-        return { ...item, status };
+        const updated = { ...item, status };
+        if (user) {
+          syncSaveItem(updated, user).catch(console.error);
+        }
+        return updated;
       }
       return item;
     }));
     showToast(`Status ${selectedIds.size} baris diubah menjadi "${status}".`);
-  }, [selectedIds, showToast]);
+  }, [selectedIds, user, showToast]);
 
   // Sort header click
   const handleSortChange = useCallback((key: keyof ProcurementItem) => {
@@ -429,19 +575,28 @@ export default function App() {
       iconType: 'reset',
       onConfirm: () => {
         setItems(INITIAL_PROCUREMENT_DATA);
+        if (user) {
+          syncUploadInitialItems(INITIAL_PROCUREMENT_DATA, user).catch(console.error);
+        }
         setSelectedIds(new Set());
         handleResetFilter();
         showToast('Data berhasil dimuat ulang ke contoh awal.');
       },
     });
-  }, [handleResetFilter, showToast]);
+  }, [handleResetFilter, user, showToast]);
 
   // Import data handler
   const handleImportData = (importedItems: ProcurementItem[], mode: 'append' | 'replace') => {
     if (mode === 'replace') {
       setItems(importedItems);
+      if (user) {
+        syncUploadInitialItems(importedItems, user).catch(console.error);
+      }
     } else {
       setItems(prev => [...prev, ...importedItems]);
+      if (user) {
+        importedItems.forEach(item => syncSaveItem(item, user).catch(console.error));
+      }
     }
     setSelectedIds(new Set());
   };
@@ -503,7 +658,32 @@ export default function App() {
         onOpenPrint={() => setIsPrintOpen(true)}
         hasUnsavedChanges={false}
         itemCount={items.length}
+        user={user}
+        isSyncing={isSyncing}
+        onLogin={handleLogin}
+        onLogout={handleLogout}
       />
+
+      {/* 2-Device Real-time Sync Banner (when not signed in) */}
+      {!user && (
+        <div className="bg-emerald-950 text-emerald-100 text-[11px] px-4 py-1.5 flex items-center justify-between border-b border-emerald-800/80 flex-wrap gap-2 shadow-xs">
+          <div className="flex items-center gap-2">
+            <span className="font-bold bg-amber-400 text-slate-900 px-1.5 py-0.5 rounded text-[10px] tracking-wide">
+              SINKRONISASI 2 DEVICE
+            </span>
+            <span>
+              Ingin data selalu update otomatis saat dibuka di 2 perangkat (Laptop & HP)? Masuk dengan akun Google yang sama di kedua perangkat.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={handleLogin}
+            className="text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1 rounded cursor-pointer transition-colors shadow-xs"
+          >
+            Masuk dengan Google Sekarang
+          </button>
+        </div>
+      )}
 
       {/* 2. Procurement Summary Cards (KPIs) */}
       <SummaryCards
@@ -531,6 +711,7 @@ export default function App() {
         onResetFilter={handleResetFilter}
         isFilterExpanded={isFilterExpanded}
         setIsFilterExpanded={setIsFilterExpanded}
+        activeRowItemName={filteredAndSortedItems[activeCell?.rowIdx ?? 0]?.itemName}
       />
 
       {/* 4. MS Excel Formula Bar */}

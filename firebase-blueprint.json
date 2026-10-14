@@ -1,0 +1,167 @@
+{
+  "entities": {
+    "ProcurementItem": {
+      "title": "Procurement Item",
+      "description": "Item pengadaan barang dan jasa sekolah",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for procurement item",
+          "maxLength": 128
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "User ID of the document owner",
+          "maxLength": 128
+        },
+        "code": {
+          "type": "string",
+          "description": "Kode pengadaan barang/jasa",
+          "maxLength": 64
+        },
+        "date": {
+          "type": "string",
+          "description": "Tanggal pengajuan YYYY-MM-DD",
+          "maxLength": 32
+        },
+        "unit": {
+          "type": "string",
+          "description": "Unit atau divisi pemohon",
+          "maxLength": 128
+        },
+        "type": {
+          "type": "string",
+          "description": "Tipe pengadaan Barang atau Jasa",
+          "enum": ["Barang", "Jasa"]
+        },
+        "category": {
+          "type": "string",
+          "description": "Kategori belanja",
+          "maxLength": 128
+        },
+        "itemName": {
+          "type": "string",
+          "description": "Nama barang atau jasa",
+          "maxLength": 256
+        },
+        "spec": {
+          "type": "string",
+          "description": "Spesifikasi teknis",
+          "maxLength": 1000
+        },
+        "quantity": {
+          "type": "number",
+          "description": "Volume jumlah barang"
+        },
+        "unitMeasure": {
+          "type": "string",
+          "description": "Satuan unit ukuran",
+          "maxLength": 64
+        },
+        "unitPrice": {
+          "type": "number",
+          "description": "Harga satuan dalam Rupiah"
+        },
+        "totalPrice": {
+          "type": "number",
+          "description": "Total harga estimasi dalam Rupiah"
+        },
+        "priority": {
+          "type": "string",
+          "description": "Skala prioritas pengadaan",
+          "enum": ["Tinggi", "Sedang", "Rendah"]
+        },
+        "status": {
+          "type": "string",
+          "description": "Status pengajuan pengadaan",
+          "enum": ["Draft", "Diajukan", "Disetujui", "Proses Beli", "Selesai", "Ditolak"]
+        },
+        "notes": {
+          "type": "string",
+          "description": "Catatan tambahan atau alasan pengadaan",
+          "maxLength": 1000
+        },
+        "vendor": {
+          "type": "string",
+          "description": "Rekomendasi rekanan atau vendor",
+          "maxLength": 256
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Timestamp update terakhir",
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "code",
+        "date",
+        "unit",
+        "type",
+        "category",
+        "itemName",
+        "quantity",
+        "unitMeasure",
+        "unitPrice",
+        "totalPrice",
+        "priority",
+        "status"
+      ]
+    },
+    "ProcurementSettings": {
+      "title": "Procurement Settings",
+      "description": "Pengaturan sekolah dan kop surat untuk sinkronisasi antar perangkat",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Identifier pengaturan",
+          "maxLength": 128
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "User ID of the document owner",
+          "maxLength": 128
+        },
+        "fiscalYear": {
+          "type": "string",
+          "description": "Tahun anggaran",
+          "maxLength": 16
+        },
+        "npsn": {
+          "type": "string",
+          "description": "Nomor Pokok Sekolah Nasional",
+          "maxLength": 32
+        },
+        "pemohonName": {
+          "type": "string",
+          "description": "Nama penanggung jawab pemohon",
+          "maxLength": 128
+        },
+        "customLogo": {
+          "type": "string",
+          "description": "Data URL logo kustom sekolah",
+          "maxLength": 500000
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Timestamp update terakhir",
+          "maxLength": 64
+        }
+      },
+      "required": ["id", "ownerId", "fiscalYear"]
+    }
+  },
+  "firestore": {
+    "/procurement_items/{itemId}": {
+      "schema": "ProcurementItem",
+      "description": "Koleksi item pengadaan barang dan jasa yang disinkronkan antar perangkat"
+    },
+    "/procurement_settings/{settingsId}": {
+      "schema": "ProcurementSettings",
+      "description": "Koleksi konfigurasi sekolah dan kop surat yang disinkronkan antar perangkat"
+    }
+  }
+}

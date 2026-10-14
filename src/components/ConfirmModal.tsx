@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { AlertTriangle, Trash2, RefreshCw, X } from 'lucide-react';
 
 interface ConfirmModalProps {
@@ -22,11 +22,32 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
   confirmVariant = 'danger',
   iconType = 'trash',
 }) => {
+  // Handle keyboard events (Esc to cancel)
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 animate-in fade-in duration-100">
-      <div className="bg-white rounded-lg shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 animate-in zoom-in-95 duration-150">
+    <div 
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 animate-in fade-in duration-100"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div 
+        className="bg-white rounded-lg shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 animate-in zoom-in-95 duration-150"
+        role="dialog"
+        aria-modal="true"
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-100 bg-slate-50">
           <div className="flex items-center gap-2.5">
@@ -48,8 +69,10 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
             <h3 className="font-semibold text-slate-800 text-sm">{title}</h3>
           </div>
           <button
+            type="button"
             onClick={onClose}
             className="text-slate-400 hover:text-slate-600 p-1 rounded hover:bg-slate-200 transition-colors cursor-pointer"
+            title="Tutup dialog"
           >
             <X className="w-4 h-4" />
           </button>
@@ -71,13 +94,14 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
           </button>
           <button
             type="button"
+            autoFocus
             onClick={() => {
               onConfirm();
               onClose();
             }}
             className={`px-4 py-1.5 text-xs font-semibold rounded text-white shadow-xs transition-colors cursor-pointer ${
               confirmVariant === 'danger'
-                ? 'bg-rose-600 hover:bg-rose-700 focus:ring-2 focus:ring-rose-400'
+                ? 'bg-rose-600 hover:bg-rose-700 focus:ring-2 focus:ring-rose-400 active:bg-rose-800'
                 : confirmVariant === 'warning'
                 ? 'bg-amber-600 hover:bg-amber-700 focus:ring-2 focus:ring-amber-400'
                 : 'bg-emerald-600 hover:bg-emerald-700 focus:ring-2 focus:ring-emerald-400'

@@ -39,6 +39,7 @@ interface ExcelToolbarProps {
   onResetFilter: () => void;
   isFilterExpanded: boolean;
   setIsFilterExpanded: (val: boolean | ((prev: boolean) => boolean)) => void;
+  activeRowItemName?: string;
 }
 
 export const ExcelToolbar: React.FC<ExcelToolbarProps> = ({
@@ -60,6 +61,7 @@ export const ExcelToolbar: React.FC<ExcelToolbarProps> = ({
   onResetFilter,
   isFilterExpanded,
   setIsFilterExpanded,
+  activeRowItemName,
 }) => {
   const hasActiveFilters = 
     filterState.search !== '' ||
@@ -103,17 +105,28 @@ export const ExcelToolbar: React.FC<ExcelToolbarProps> = ({
           </button>
 
           <button
+            type="button"
             onClick={onDeleteSelected}
-            disabled={selectedCount === 0}
+            disabled={totalCount === 0}
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold transition-colors border ${
-              selectedCount > 0 
+              totalCount > 0 
                 ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-300 cursor-pointer shadow-xs active:scale-95' 
                 : 'bg-slate-100 text-slate-400 border-transparent cursor-not-allowed'
             }`}
-            title={selectedCount > 0 ? `Hapus permanen ${selectedCount} baris barang yang dicentang` : 'Centang baris barang untuk menghapus permanen'}
+            title={
+              selectedCount > 0 
+                ? `Hapus permanen ${selectedCount} baris barang yang dicentang` 
+                : activeRowItemName 
+                ? `Hapus permanen baris aktif: "${activeRowItemName}"` 
+                : 'Hapus permanen baris pengajuan'
+            }
           >
             <Trash2 className="w-3.5 h-3.5 text-rose-600" />
-            <span>Hapus Permanen {selectedCount > 0 ? `(${selectedCount})` : ''}</span>
+            <span>
+              {selectedCount > 0 
+                ? `Hapus Permanen (${selectedCount})` 
+                : 'Hapus Permanen'}
+            </span>
           </button>
 
           {/* Batch Status dropdown when selected */}
